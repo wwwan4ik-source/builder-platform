@@ -209,6 +209,32 @@ Matching
 Open Question
 ```
 
+## Поточна бібліотека елементів у прототипі
+
+Станом на 2026-05-31 у прототипі `Libruary` є такі елементи для Lesson Builder:
+
+```text
+Title
+Single-answer question
+Multiple-select question
+Write text
+Image upload
+Fill in blanks
+```
+
+### Image upload
+
+Елемент для додавання картинки в урок.
+
+Поведінка:
+
+- користувач додає блок з бібліотеки
+- може клікнути на upload area і вибрати файл
+- може перетягнути картинку в drag-and-drop area
+- після завантаження бачить preview картинки
+
+Цей елемент закриває MVP-блок `Image` і потрібен для прикладів, схем, screenshots та інших візуальних навчальних матеріалів.
+
 ### Nice-to-have після першої версії
 
 ```text
