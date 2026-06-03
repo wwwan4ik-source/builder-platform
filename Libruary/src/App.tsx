@@ -1,207 +1,75 @@
-import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react"
+import { type KeyboardEvent, useEffect, useRef, useState } from "react"
 import {
   ArrowDown,
   ArrowUp,
-  Bell,
   BookOpen,
+  CalendarDays,
   Check,
   ChevronDown,
   Eye,
   Funnel,
   ImageUp,
-  LayoutDashboard,
-  ListChecks,
   Layers3,
+  Mail,
   MoreHorizontal,
+  Users,
   Search,
-  TextCursorInput,
-  PenLine,
   Pencil,
   Plus,
-  Radio,
-  Rocket,
-  Save,
-  Type,
   Trash2,
-  X,
 } from "lucide-react"
 
+import { AppShell } from "@/components/app-shell"
+import { AuthScreen } from "@/components/auth-screen"
+import { Toast } from "@/components/toast"
 import { Button } from "@/components/ui/button"
-import { supabase } from "@/lib/supabase"
+import {
+  ensureTutorProfile,
+  getCurrentSession,
+  onAuthSessionChange,
+  signOutTutor,
+} from "@/lib/auth-api"
+import {
+  deleteLessonRecord,
+  fetchLatestDraft,
+  fetchLessons,
+  persistLessonRecord,
+} from "@/lib/lesson-api"
+import {
+  createElement,
+  getLessonTitleFromBlocks,
+  hydrateElements,
+  libraryItems,
+  renumberDefaultOptions,
+  splitPromptByBlanks,
+} from "@/lib/lesson-elements"
+import {
+  assignLessonRecord,
+  createStudentRecord,
+  fetchStudentAssignments,
+  fetchStudents,
+} from "@/lib/student-api"
+import { formatCount, formatSavedDate, getStatusBadgeClass } from "@/lib/format"
+import {
+  type AppPage,
+  type AuthPage,
+  type BlankItem,
+  type ElementType,
+  type FillBlanksElement,
+  type LessonElement,
+  type LessonMode,
+  type LessonStatus,
+  type LessonStatusFilter,
+  type SaveState,
+  type SavedLessonRow,
+  type ToastState,
+} from "@/types/lesson"
+import { type TutorProfile } from "@/types/auth"
+import {
+  type AssignedLessonRow,
+  type StudentRow,
+} from "@/types/student"
 import "./App.css"
-
-type ElementType =
-  | "title"
-  | "radio-field"
-  | "checkbox-field"
-  | "text-field"
-  | "image-upload"
-  | "fill-blanks"
-
-type RadioOption = {
-  id: number
-  value: string
-}
-
-type ChoiceOption = RadioOption
-
-type TitleElement = {
-  id: number
-  type: "title"
-  title: string
-}
-
-type RadioFieldElement = {
-  id: number
-  type: "radio-field"
-  title: string
-  correctOptionId: number
-  options: RadioOption[]
-}
-
-type CheckboxFieldElement = {
-  id: number
-  type: "checkbox-field"
-  title: string
-  correctOptionIds: number[]
-  options: ChoiceOption[]
-}
-
-type TextFieldElement = {
-  id: number
-  type: "text-field"
-  title: string
-}
-
-type ImageUploadElement = {
-  id: number
-  type: "image-upload"
-  title: string
-  imageSrc: string | null
-  imageName: string
-}
-
-type BlankAnswerOption = {
-  id: number
-  value: string
-}
-
-type BlankItem = {
-  id: number
-  mode: "typed" | "choice"
-  marker: string
-  correctAnswer: string
-  correctOptionId: number
-  options: BlankAnswerOption[]
-}
-
-type FillBlanksElement = {
-  id: number
-  type: "fill-blanks"
-  title: string
-  prompt: string
-  blanks: BlankItem[]
-  isInsertMenuOpen: boolean
-  insertMenuPlacement: "bottom" | "top"
-  activeChoiceBlankId: number | null
-  activeChoiceBlankPlacement: "bottom" | "top"
-}
-
-type LessonElement =
-  | TitleElement
-  | RadioFieldElement
-  | CheckboxFieldElement
-  | TextFieldElement
-  | ImageUploadElement
-  | FillBlanksElement
-
-type SaveState = "idle" | "loading" | "saving" | "saved" | "error"
-type AppPage = "dashboard" | "lessons"
-type LessonStatus = "draft" | "published"
-type LessonStatusFilter = "all" | LessonStatus
-type LessonMode = "edit" | "student"
-type ToastState = {
-  id: number
-  message: string
-}
-
-type LessonRow = {
-  id: string
-  title: string
-  blocks: LessonElement[]
-  status: LessonStatus
-}
-
-type SavedLessonRow = LessonRow & {
-  updated_at: string
-  created_at: string
-}
-
-const libraryItems: Array<{
-  type: ElementType
-  name: string
-  description: string
-  icon: typeof Type
-}> = [
-  {
-    type: "title",
-    name: "Title",
-    description: "Add a lesson heading",
-    icon: Type,
-  },
-  {
-    type: "radio-field",
-    name: "Single-answer question",
-    description: "Create options and mark one correct answer",
-    icon: Radio,
-  },
-  {
-    type: "checkbox-field",
-    name: "Multiple-select question",
-    description: "Create options and mark every correct answer",
-    icon: ListChecks,
-  },
-  {
-    type: "text-field",
-    name: "Write text",
-    description: "Add a free-text writing task",
-    icon: TextCursorInput,
-  },
-  {
-    type: "image-upload",
-    name: "Image upload",
-    description: "Add a drag and drop image area",
-    icon: ImageUp,
-  },
-  {
-    type: "fill-blanks",
-    name: "Fill in blanks",
-    description: "Insert typed or choice blanks inside a text task",
-    icon: PenLine,
-  },
-]
-
-function renumberDefaultOptions(options: RadioOption[]) {
-  return options.map((option, optionIndex) => ({
-    ...option,
-    value: /^Option \d+$/.test(option.value)
-      ? `Option ${optionIndex + 1}`
-      : option.value,
-  }))
-}
-
-function splitPromptByBlanks(prompt: string, blanks: BlankItem[]) {
-  if (blanks.length === 0) {
-    return [prompt]
-  }
-
-  const markers = blanks.map((blank) => blank.marker)
-  const markerPattern = new RegExp(
-    `(${markers.map((marker) => marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`
-  )
-
-  return prompt.split(markerPattern)
-}
 
 function getEditableTextOffset(node: HTMLElement) {
   const selection = window.getSelection()
@@ -224,134 +92,47 @@ function getFloatingMenuPlacement(trigger: HTMLElement | undefined, menuHeight: 
   }
 
   const triggerRect = trigger.getBoundingClientRect()
-  const boundaryRect =
-    trigger.closest(".canvas-area")?.getBoundingClientRect() ??
-    trigger.closest(".lesson-element")?.getBoundingClientRect()
+  const boundaryRect = trigger.closest(".builder-modal")?.getBoundingClientRect()
   const boundaryBottom = Math.min(
     boundaryRect?.bottom ?? window.innerHeight,
     window.innerHeight
   )
   const menuGap = 6
+  const spaceBelow = boundaryBottom - triggerRect.bottom
 
-  return boundaryBottom - triggerRect.bottom < menuHeight + menuGap
-    ? "top"
-    : "bottom"
-}
-
-function createElement(type: ElementType): LessonElement {
-  const item = libraryItems.find((libraryItem) => libraryItem.type === type)
-  const id = Date.now()
-
-  if (type === "radio-field" || type === "checkbox-field") {
-    const options = [1, 2, 3].map((optionNumber) => ({
-      id: id + optionNumber,
-      value: `Option ${optionNumber}`,
-    }))
-
-    if (type === "checkbox-field") {
-      return {
-        id,
-        type,
-        title: item?.name ?? "Multiple-select question",
-        correctOptionIds: [options[0].id],
-        options,
-      }
-    }
-
-    return {
-      id,
-      type,
-      title: item?.name ?? "Single-answer question",
-      correctOptionId: options[0].id,
-      options,
-    }
+  if (spaceBelow < menuHeight + menuGap) {
+    return "top"
   }
 
-  if (type === "fill-blanks") {
-    return {
-      id,
-      type,
-      title: item?.name ?? "Fill in blanks",
-      prompt: "",
-      blanks: [],
-      isInsertMenuOpen: false,
-      insertMenuPlacement: "bottom",
-      activeChoiceBlankId: null,
-      activeChoiceBlankPlacement: "bottom",
-    }
-  }
-
-  if (type === "image-upload") {
-    return {
-      id,
-      type,
-      title: item?.name ?? "Image upload",
-      imageSrc: null,
-      imageName: "",
-    }
-  }
-
-  return {
-    id,
-    type,
-    title: item?.name ?? "Block",
-  }
+  return "bottom"
 }
 
-function prepareElementsForSave(elementsToSave: LessonElement[]) {
-  return elementsToSave.map((element) => {
-    if (element.type !== "fill-blanks") {
-      return element
-    }
+function getPageFromHash(): AppPage {
+  const hashPage = window.location.hash.replace(/^#\/?/, "")
 
-    return {
-      ...element,
-      isInsertMenuOpen: false,
-      insertMenuPlacement: "bottom",
-      activeChoiceBlankId: null,
-      activeChoiceBlankPlacement: "bottom",
-    }
-  })
-}
-
-function hydrateElements(savedBlocks: unknown): LessonElement[] {
-  if (!Array.isArray(savedBlocks)) {
-    return []
+  if (hashPage === "lessons" || hashPage === "students") {
+    return hashPage
   }
 
-  return savedBlocks.map((block) => {
-    const element = block as LessonElement
-
-    if (element.type !== "fill-blanks") {
-      return element
-    }
-
-    return {
-      ...element,
-      isInsertMenuOpen: false,
-      insertMenuPlacement: "bottom",
-      activeChoiceBlankId: null,
-      activeChoiceBlankPlacement: "bottom",
-    }
-  })
+  return "dashboard"
 }
 
-function getLessonTitleFromBlocks(elementsToRead: LessonElement[]) {
-  const titleBlock = elementsToRead.find(
-    (element): element is TitleElement => element.type === "title"
-  )
+function getAuthPageFromHash(): AuthPage {
+  const hashPage = window.location.hash.replace(/^#\/?/, "")
 
-  return titleBlock?.title.trim() || "Draft"
+  if (hashPage === "create-account") {
+    return "create-account"
+  }
+
+  return "sign-in"
 }
 
-function formatSavedDate(value: string) {
-  return new Intl.DateTimeFormat("en", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value))
+function getHashForPage(page: AppPage) {
+  return `#/${page}`
+}
+
+function getHashForAuthPage(page: AuthPage) {
+  return `#/${page}`
 }
 
 function App() {
@@ -366,7 +147,10 @@ function App() {
     partIndex: number
   } | null>(null)
   const [isBuilderOpen, setIsBuilderOpen] = useState(false)
-  const [viewMode, setViewMode] = useState<AppPage>("dashboard")
+  const [viewMode, setViewMode] = useState<AppPage>(() => getPageFromHash())
+  const [authViewMode, setAuthViewMode] = useState<AuthPage>(() =>
+    getAuthPageFromHash()
+  )
   const [lessonStatus, setLessonStatus] = useState<LessonStatus>("draft")
   const [lessonMode, setLessonMode] = useState<LessonMode>("edit")
   const [elements, setElements] = useState<LessonElement[]>([])
@@ -379,16 +163,44 @@ function App() {
   const [lessonSearchQuery, setLessonSearchQuery] = useState("")
   const [lessonStatusFilter, setLessonStatusFilter] =
     useState<LessonStatusFilter>("all")
+  const [students, setStudents] = useState<StudentRow[]>([])
+  const [studentsState, setStudentsState] = useState<SaveState>("idle")
+  const [studentsMessage, setStudentsMessage] = useState("")
+  const [studentSearchQuery, setStudentSearchQuery] = useState("")
+  const [isAddStudentOpen, setIsAddStudentOpen] = useState(false)
+  const [newStudentName, setNewStudentName] = useState("")
+  const [studentModalError, setStudentModalError] = useState("")
+  const [studentToAssign, setStudentToAssign] = useState<StudentRow | null>(
+    null
+  )
+  const [studentToView, setStudentToView] = useState<StudentRow | null>(null)
+  const [studentDetailLessons, setStudentDetailLessons] = useState<
+    AssignedLessonRow[]
+  >([])
+  const [studentDetailState, setStudentDetailState] =
+    useState<SaveState>("idle")
+  const [studentDetailMessage, setStudentDetailMessage] = useState("")
+  const [selectedAssignmentLessonId, setSelectedAssignmentLessonId] =
+    useState("")
+  const [assignmentModalError, setAssignmentModalError] = useState("")
   const [lessonToDelete, setLessonToDelete] = useState<SavedLessonRow | null>(
     null
   )
   const [openLessonActionsId, setOpenLessonActionsId] = useState<string | null>(
     null
   )
+  const [openStudentActionsId, setOpenStudentActionsId] = useState<
+    string | null
+  >(null)
   const [toast, setToast] = useState<ToastState | null>(null)
   const [lastAddedElementId, setLastAddedElementId] = useState<number | null>(
     null
   )
+  const [authState, setAuthState] = useState<SaveState>("loading")
+  const [authMessage, setAuthMessage] = useState("Checking session...")
+  const [tutorProfile, setTutorProfile] = useState<TutorProfile | null>(null)
+
+  const currentTutorId = tutorProfile?.id ?? null
 
   function showToast(message: string) {
     setToast({
@@ -397,21 +209,107 @@ function App() {
     })
   }
 
+  function navigateToPage(page: AppPage) {
+    const nextHash = getHashForPage(page)
+
+    if (window.location.hash === nextHash) {
+      setViewMode(page)
+      return
+    }
+
+    window.location.hash = nextHash
+  }
+
+  function navigateToAuthPage(page: AuthPage) {
+    const nextHash = getHashForAuthPage(page)
+
+    if (window.location.hash === nextHash) {
+      setAuthViewMode(page)
+      return
+    }
+
+    window.location.hash = nextHash
+  }
+
+  async function bootstrapTutorProfile(
+    userId: string | null,
+    email: string | null,
+    fallbackName = ""
+  ) {
+    if (!userId) {
+      setTutorProfile(null)
+      setAuthState("idle")
+      setAuthMessage("")
+      return
+    }
+
+    setAuthState("loading")
+    setAuthMessage("Loading tutor profile...")
+
+    const { data, error } = await ensureTutorProfile(userId, email, fallbackName)
+
+    if (error) {
+      setTutorProfile(null)
+      setAuthState("error")
+      setAuthMessage(error.message)
+      return
+    }
+
+    setTutorProfile(data)
+    setAuthState("idle")
+    setAuthMessage("")
+
+    const hashPage = window.location.hash.replace(/^#\/?/, "")
+    if (hashPage === "sign-in" || hashPage === "create-account" || !hashPage) {
+      navigateToPage("dashboard")
+    }
+  }
+
+  async function refreshAuthenticatedTutor() {
+    const { data, error } = await getCurrentSession()
+
+    if (error) {
+      setAuthState("error")
+      setAuthMessage(error.message)
+      return
+    }
+
+    await bootstrapTutorProfile(
+      data.session?.user.id ?? null,
+      data.session?.user.email ?? null,
+      data.session?.user.user_metadata?.name ?? ""
+    )
+  }
+
+  async function handleSignOut() {
+    const { error } = await signOutTutor()
+
+    if (error) {
+      showToast(error.message)
+      return
+    }
+
+    setTutorProfile(null)
+    setLessons([])
+    setStudents([])
+    setElements([])
+    setLessonId(null)
+    setIsBuilderOpen(false)
+    navigateToAuthPage("sign-in")
+  }
+
   async function loadLessons() {
-    if (!supabase) {
-      setLessonsState("error")
-      setLessonsMessage("Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY first")
+    if (!currentTutorId) {
+      setLessons([])
+      setLessonsState("idle")
+      setLessonsMessage("Sign in to load lessons")
       return
     }
 
     setLessonsState("loading")
     setLessonsMessage("Loading lessons...")
 
-    const { data, error } = await supabase
-      .from("lessons")
-      .select("id,title,status,blocks,created_at,updated_at")
-      .order("updated_at", { ascending: false })
-      .returns<SavedLessonRow[]>()
+    const { data, error } = await fetchLessons(currentTutorId)
 
     if (error) {
       setLessonsState("error")
@@ -421,27 +319,204 @@ function App() {
 
     setLessons(data ?? [])
     setLessonsState("idle")
-    setLessonsMessage(data?.length ? "" : "No saved lessons yet")
+    setLessonsMessage("")
   }
 
-  useEffect(() => {
-    if (!supabase) {
+  async function loadStudents() {
+    if (!currentTutorId) {
+      setStudents([])
+      setStudentsState("idle")
+      setStudentsMessage("Sign in to load students")
       return
     }
 
+    setStudentsState("loading")
+    setStudentsMessage("Loading students...")
+
+    const { data, error } = await fetchStudents(currentTutorId)
+
+    if (error) {
+      setStudentsState("error")
+      setStudentsMessage(error.message)
+      return
+    }
+
+    const nextStudents = data ?? []
+    setStudents(nextStudents)
+    setStudentsState("idle")
+    setStudentsMessage("")
+  }
+
+  async function createStudent() {
+    if (!currentTutorId) {
+      setStudentModalError("Sign in to create students")
+      return
+    }
+
+    const studentName = newStudentName.trim()
+
+    if (!studentName) {
+      setStudentModalError("Student name is required")
+      return
+    }
+
+    setStudentsState("saving")
+    setStudentsMessage("Creating student...")
+
+    const { error } = await createStudentRecord(studentName, currentTutorId)
+
+    if (error) {
+      setStudentsState("idle")
+      setStudentModalError(error.message)
+      return
+    }
+
+    setIsAddStudentOpen(false)
+    setNewStudentName("")
+    setStudentModalError("")
+    setStudentsState("saved")
+    setStudentsMessage("")
+    showToast("Student added")
+    await loadStudents()
+  }
+
+  async function openAssignLesson(student: StudentRow) {
+    setOpenStudentActionsId(null)
+    setStudentToAssign(student)
+    setSelectedAssignmentLessonId("")
+    setAssignmentModalError("")
+    setStudentsMessage("")
+
+    if (lessons.length === 0 && lessonsState !== "loading") {
+      await loadLessons()
+    }
+  }
+
+  async function openStudentDetails(student: StudentRow) {
+    if (!currentTutorId) {
+      setStudentDetailState("error")
+      setStudentDetailMessage("Sign in to view student details")
+      return
+    }
+
+    setOpenStudentActionsId(null)
+    setStudentToView(student)
+    setStudentDetailLessons([])
+    setStudentDetailMessage("Loading assigned lessons...")
+
+    setStudentDetailState("loading")
+
+    const { data, error } = await fetchStudentAssignments(student.id, currentTutorId)
+
+    if (error) {
+      setStudentDetailState("error")
+      setStudentDetailMessage(error.message)
+      return
+    }
+
+    setStudentDetailLessons(data ?? [])
+    setStudentDetailState("idle")
+    setStudentDetailMessage(data?.length ? "" : "No lessons assigned yet")
+  }
+
+  async function assignLessonToStudent() {
+    if (!studentToAssign || !currentTutorId) {
+      return
+    }
+
+    if (!selectedAssignmentLessonId) {
+      setAssignmentModalError("Choose a lesson to assign")
+      return
+    }
+
+    setStudentsState("saving")
+    setStudentsMessage("Assigning lesson...")
+
+    const { error } = await assignLessonRecord(
+      studentToAssign.id,
+      selectedAssignmentLessonId,
+      currentTutorId
+    )
+
+    if (error) {
+      setStudentsState("idle")
+      const errorCode = "code" in error ? error.code : ""
+      setAssignmentModalError(
+        errorCode === "23505"
+          ? "This lesson is already assigned to this student"
+          : error.message
+      )
+      return
+    }
+
+    setStudentToAssign(null)
+    setSelectedAssignmentLessonId("")
+    setAssignmentModalError("")
+    setStudentsState("saved")
+    setStudentsMessage("")
+    showToast("Lesson assigned")
+    await loadStudents()
+    if (studentToView?.id === studentToAssign.id) {
+      await openStudentDetails(studentToAssign)
+    }
+  }
+
+  useEffect(() => {
+    if (!window.location.hash) {
+      window.history.replaceState(null, "", getHashForAuthPage(authViewMode))
+    }
+
+    function handleHashChange() {
+      const hashPage = window.location.hash.replace(/^#\/?/, "")
+
+      if (hashPage === "sign-in" || hashPage === "create-account") {
+        setAuthViewMode(getAuthPageFromHash())
+        return
+      }
+
+      setViewMode(getPageFromHash())
+    }
+
+    window.addEventListener("hashchange", handleHashChange)
+
+    return () => window.removeEventListener("hashchange", handleHashChange)
+  }, [])
+
+  useEffect(() => {
+    refreshAuthenticatedTutor()
+
+    return onAuthSessionChange((userId, email) => {
+      bootstrapTutorProfile(userId, email)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!currentTutorId) {
+      return
+    }
+
+    if (viewMode === "lessons") {
+      loadLessons()
+    }
+
+    if (viewMode === "students") {
+      loadStudents()
+    }
+  }, [currentTutorId, viewMode])
+
+  useEffect(() => {
+    if (!currentTutorId) {
+      return
+    }
+
+    const tutorId = currentTutorId
     let isMounted = true
 
     async function loadLatestDraft() {
       setSaveState("loading")
       setSaveMessage("Loading latest draft...")
 
-      const { data, error } = await supabase!
-        .from("lessons")
-        .select("id,title,status,blocks")
-        .eq("status", "draft")
-        .order("updated_at", { ascending: false })
-        .limit(1)
-        .maybeSingle<LessonRow>()
+      const { data, error } = await fetchLatestDraft(tutorId)
 
       if (!isMounted) {
         return
@@ -471,7 +546,7 @@ function App() {
     return () => {
       isMounted = false
     }
-  }, [])
+  }, [currentTutorId])
 
   useEffect(() => {
     if (lastAddedElementId === null) {
@@ -823,7 +898,7 @@ function App() {
     const blank = currentElement?.blanks.find(
       (blankItem) => blankItem.id === blankId
     )
-    const menuHeight = blank ? 16 + blank.options.length * 54 + 44 : 220
+    const menuHeight = blank ? 16 + blank.options.length * 72 + 52 : 300
     const placement = getFloatingMenuPlacement(trigger, menuHeight)
 
     setElements((currentElements) =>
@@ -1215,16 +1290,17 @@ function App() {
   }
 
   async function persistLesson(nextStatus: LessonStatus) {
-    if (!supabase) {
+    if (!currentTutorId) {
       setSaveState("error")
-      setSaveMessage("Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY first")
+      setSaveMessage("Sign in to save lessons")
       return
     }
 
+    const lessonTitle = getLessonTitleFromBlocks(elements)
     const lessonPayload = {
       title: getLessonTitleFromBlocks(elements),
       status: nextStatus,
-      blocks: prepareElementsForSave(elements),
+      elements,
     }
 
     setSaveState("saving")
@@ -1232,22 +1308,23 @@ function App() {
 
     const isNewLesson = lessonId === null
 
-    const { data, error } = lessonId
-      ? await supabase
-          .from("lessons")
-          .update(lessonPayload)
-          .eq("id", lessonId)
-          .select("id,title,status,blocks")
-          .single<LessonRow>()
-      : await supabase
-          .from("lessons")
-          .insert(lessonPayload)
-          .select("id,title,status,blocks")
-          .single<LessonRow>()
+    const { data, error } = await persistLessonRecord({
+      lessonId,
+      tutorId: currentTutorId,
+      title: lessonTitle,
+      status: lessonPayload.status,
+      elements: lessonPayload.elements,
+    })
 
     if (error) {
       setSaveState("error")
       setSaveMessage(error.message)
+      return
+    }
+
+    if (!data) {
+      setSaveState("error")
+      setSaveMessage("Lesson was not saved")
       return
     }
 
@@ -1265,7 +1342,7 @@ function App() {
     )
     loadLessons()
     setIsBuilderOpen(false)
-    setViewMode("lessons")
+    navigateToPage("lessons")
   }
 
   function saveLesson() {
@@ -1277,16 +1354,16 @@ function App() {
   }
 
   async function deleteLesson(lesson: SavedLessonRow) {
-    if (!supabase) {
+    if (!currentTutorId) {
       setLessonsState("error")
-      setLessonsMessage("Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY first")
+      setLessonsMessage("Sign in to delete lessons")
       return
     }
 
     setLessonsState("loading")
     setLessonsMessage("Deleting lesson...")
 
-    const { error } = await supabase.from("lessons").delete().eq("id", lesson.id)
+    const { error } = await deleteLessonRecord(lesson.id, currentTutorId)
 
     if (error) {
       setLessonsState("error")
@@ -1323,6 +1400,16 @@ function App() {
 
     return matchesSearch && matchesStatus
   })
+  const normalizedStudentSearchQuery = studentSearchQuery.trim().toLowerCase()
+  const filteredStudents = students.filter((student) => {
+    const studentEmail = student.email ?? ""
+
+    return (
+      normalizedStudentSearchQuery.length === 0 ||
+      student.name.toLowerCase().includes(normalizedStudentSearchQuery) ||
+      studentEmail.toLowerCase().includes(normalizedStudentSearchQuery)
+    )
+  })
   const isEditMode = lessonMode === "edit"
   const builderPageTitle =
     lessonId === null
@@ -1330,58 +1417,6 @@ function App() {
       : isEditMode
         ? "Edit lesson"
         : "Preview lesson"
-
-  function renderAppShell(content: ReactNode) {
-    return (
-      <main className="app-shell">
-        <header className="app-header">
-          <strong>Lesson builder</strong>
-          <div className="app-header-actions">
-            <button
-              type="button"
-              className="notification-button"
-              aria-label="Notifications"
-            >
-              <Bell />
-            </button>
-            <span className="user-initials" aria-label="User initials">
-              AO
-            </span>
-          </div>
-        </header>
-
-        <div className="app-body">
-          <aside className="app-sidebar" aria-label="Main navigation">
-            <nav className="sidebar-nav">
-              <button
-                type="button"
-                className={viewMode === "dashboard" ? "active" : ""}
-                onClick={() => setViewMode("dashboard")}
-              >
-                <LayoutDashboard />
-                Dashboard
-              </button>
-              <button
-                type="button"
-                className={viewMode === "lessons" ? "active" : ""}
-                onClick={() => {
-                  setViewMode("lessons")
-                  loadLessons()
-                }}
-              >
-                <BookOpen />
-                Lessons
-              </button>
-            </nav>
-          </aside>
-
-          <section className="app-content">
-            {content}
-          </section>
-        </div>
-      </main>
-    )
-  }
 
   const dashboardPage = (
     <section className="dashboard-page" aria-labelledby="dashboard-title">
@@ -1398,15 +1433,17 @@ function App() {
       <div className="dashboard-stats" aria-label="Lesson stats">
         <article>
           <span>Total lessons</span>
-          <strong>{lessons.length}</strong>
+          <strong>{formatCount(lessons.length, "lesson")}</strong>
         </article>
         <article>
           <span>Drafts</span>
-          <strong>{draftLessons.length}</strong>
+          <strong>{formatCount(draftLessons.length, "draft")}</strong>
         </article>
         <article>
           <span>Published</span>
-          <strong>{publishedLessons.length}</strong>
+          <strong>
+            {formatCount(publishedLessons.length, "published lesson")}
+          </strong>
         </article>
       </div>
 
@@ -1424,7 +1461,7 @@ function App() {
               <Button
                 variant="outline"
                 onClick={() => {
-                  setViewMode("lessons")
+                  navigateToPage("lessons")
                   loadLessons()
                 }}
               >
@@ -1456,16 +1493,7 @@ function App() {
       <header className="subheader lessons-subheader">
         <div className="subheader-title">
           <h1>Lessons</h1>
-          <span>{filteredLessons.length}</span>
-          {lessonsMessage ? (
-            <p
-              className={`save-status ${
-                lessonsState === "error" ? "save-status-error" : ""
-              }`}
-            >
-              {lessonsMessage}
-            </p>
-          ) : null}
+          <span>{formatCount(filteredLessons.length, "lesson")}</span>
         </div>
         <div className="subheader-actions" aria-label="Lesson actions">
           <label className="lessons-search">
@@ -1500,7 +1528,13 @@ function App() {
       </header>
 
       <div className="lessons-table-wrap">
-            {lessons.length === 0 && lessonsState !== "loading" ? (
+            {lessonsState === "error" && lessonsMessage ? (
+              <div className="empty-state">
+                <BookOpen />
+                <h3>Lessons could not load</h3>
+                <p>{lessonsMessage}</p>
+              </div>
+            ) : lessons.length === 0 && lessonsState !== "loading" ? (
               <div className="empty-state">
                 <BookOpen />
                 <h3>No saved lessons yet</h3>
@@ -1532,9 +1566,11 @@ function App() {
                         <strong>{lesson.title || "Draft"}</strong>
                       </td>
                       <td>
-                        <span className="lesson-status">{lesson.status}</span>
+                        <span className={getStatusBadgeClass(lesson.status)}>
+                          {lesson.status}
+                        </span>
                       </td>
-                      <td>{lesson.blocks.length}</td>
+                      <td>{formatCount(lesson.blocks.length, "block")}</td>
                       <td>{formatSavedDate(lesson.updated_at)}</td>
                       <td>
                         <div className="lesson-actions">
@@ -1598,39 +1634,162 @@ function App() {
         </section>
   )
 
+  const studentsPage = (
+    <section className="lessons-page" aria-label="Students">
+      <header className="subheader lessons-subheader">
+        <div className="subheader-title">
+          <h1>Students</h1>
+          <span>{formatCount(filteredStudents.length, "student")}</span>
+        </div>
+        <div className="subheader-actions" aria-label="Student actions">
+          <label className="lessons-search">
+            <Search aria-hidden="true" />
+            <span className="sr-only">Search students by name or email</span>
+            <input
+              type="search"
+              value={studentSearchQuery}
+              onChange={(event) => setStudentSearchQuery(event.target.value)}
+              placeholder="Search by student name"
+            />
+          </label>
+          <Button onClick={() => setIsAddStudentOpen(true)}>
+            <Plus />
+            Add student
+          </Button>
+        </div>
+      </header>
+
+      <div className="lessons-table-wrap">
+        {studentsState === "error" && studentsMessage ? (
+          <div className="empty-state">
+            <Users />
+            <h3>Students could not load</h3>
+            <p>{studentsMessage}</p>
+          </div>
+        ) : students.length === 0 && studentsState !== "loading" ? (
+          <div className="empty-state">
+            <Users />
+            <h3>No students yet</h3>
+            <p>Add a student to assign lessons and track progress.</p>
+          </div>
+        ) : filteredStudents.length === 0 && studentsState !== "loading" ? (
+          <div className="empty-state">
+            <Search />
+            <h3>No matching students</h3>
+            <p>Adjust the search to see more students.</p>
+          </div>
+        ) : (
+          <table className="lessons-table">
+            <thead>
+              <tr>
+                <th>Student</th>
+                <th>Email</th>
+                <th>Assigned lessons</th>
+                <th>Added</th>
+                <th>
+                  <span className="sr-only">Actions</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredStudents.map((student) => (
+                <tr key={student.id}>
+                  <td>
+                    <strong>{student.name}</strong>
+                  </td>
+                  <td>{student.email ?? "No email yet"}</td>
+                  <td>
+                    {formatCount(
+                      student.assigned_lessons_count,
+                      "assigned lesson"
+                    )}
+                  </td>
+                  <td>{formatSavedDate(student.created_at)}</td>
+                  <td>
+                    <div className="lesson-actions">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon-sm"
+                        onClick={() =>
+                          setOpenStudentActionsId((currentId) =>
+                            currentId === student.id ? null : student.id
+                          )
+                        }
+                        aria-expanded={openStudentActionsId === student.id}
+                        aria-haspopup="menu"
+                        aria-label={`Actions for ${student.name}`}
+                        title={`Actions for ${student.name}`}
+                      >
+                        <MoreHorizontal />
+                      </Button>
+                      {openStudentActionsId === student.id ? (
+                        <div className="lesson-actions-menu" role="menu">
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => openStudentDetails(student)}
+                          >
+                            <Eye />
+                            View details
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => openAssignLesson(student)}
+                          >
+                            <BookOpen />
+                            Assign lesson
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </section>
+  )
+
   const builderModal = isBuilderOpen ? (
     <div className="builder-modal" role="dialog" aria-modal="true">
       <main className={`builder-shell builder-mode-${lessonMode}`}>
-      <header className="builder-header">
-        <div>
+      <header className="builder-header full-page-header">
+        <div className="full-page-title">
           <h1 className="builder-page-title">{builderPageTitle}</h1>
           {saveState === "error" && saveMessage ? (
             <p className="save-status save-status-error">{saveMessage}</p>
           ) : null}
         </div>
         <div className="header-actions">
-          <Button
-            variant="outline"
-            onClick={closeBuilder}
-            title="Close builder"
-          >
-            <X />
-            Close
-          </Button>
           {lessonStatus === "draft" ? (
             <>
               {isEditMode ? (
-                <Button onClick={saveLesson} disabled={saveState === "saving"}>
-                  <Save />
+                <Button
+                  variant="outline"
+                  onClick={saveLesson}
+                  disabled={saveState === "saving"}
+                >
                   {saveState === "saving" ? "Saving" : "Save draft"}
                 </Button>
               ) : null}
               <Button onClick={publishLesson} disabled={saveState === "saving"}>
-                <Rocket />
                 {saveState === "saving" ? "Publishing" : "Publish"}
               </Button>
             </>
           ) : null}
+          <Button
+            className="full-page-close"
+            variant="ghost"
+            onClick={closeBuilder}
+            aria-label="Close builder"
+            title="Close builder"
+          >
+            Close
+          </Button>
         </div>
       </header>
 
@@ -1640,7 +1799,7 @@ function App() {
             <div>
               <h2>{isEditMode ? "Canvas" : "Lesson view"}</h2>
             </div>
-            <span>{elements.length} blocks</span>
+            <span className="ui-badge">{formatCount(elements.length, "block")}</span>
           </div>
 
           <div className="canvas-area" ref={canvasRef}>
@@ -2314,6 +2473,277 @@ function App() {
     </div>
   ) : null
 
+  const addStudentModal = isAddStudentOpen ? (
+    <div className="confirm-modal-backdrop" role="presentation">
+      <section
+        className="confirm-modal add-student-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-student-title"
+      >
+        <div className="confirm-modal-copy">
+          <h2 id="add-student-title">Add student</h2>
+          <label className="modal-field">
+            <span>Name</span>
+            <input
+              type="text"
+              value={newStudentName}
+              onChange={(event) => {
+                setNewStudentName(event.target.value)
+                setStudentModalError("")
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault()
+                  createStudent()
+                }
+              }}
+              placeholder="Student name"
+              autoFocus
+            />
+          </label>
+          {studentModalError ? (
+            <p className="confirm-modal-error">{studentModalError}</p>
+          ) : null}
+        </div>
+        <div className="confirm-modal-actions">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              setIsAddStudentOpen(false)
+              setNewStudentName("")
+              setStudentModalError("")
+              setStudentsMessage("")
+              setStudentsState("idle")
+            }}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={createStudent}
+            disabled={studentsState === "saving"}
+          >
+            Create
+          </Button>
+        </div>
+      </section>
+    </div>
+  ) : null
+
+  const assignLessonModal = studentToAssign ? (
+    <div className="confirm-modal-backdrop" role="presentation">
+      <section
+        className="confirm-modal add-student-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="assign-lesson-title"
+      >
+        <div className="confirm-modal-copy">
+          <h2 id="assign-lesson-title">Assign lesson</h2>
+          <label className="modal-field">
+            <span>Student</span>
+            <input type="text" value={studentToAssign.name} readOnly />
+          </label>
+          <label className="modal-field">
+            <span>Lesson</span>
+            <select
+              value={selectedAssignmentLessonId}
+              onChange={(event) => {
+                setSelectedAssignmentLessonId(event.target.value)
+                setAssignmentModalError("")
+              }}
+              disabled={lessons.length === 0}
+            >
+              <option value="">Choose lesson</option>
+              {lessons.map((lesson) => (
+                <option key={lesson.id} value={lesson.id}>
+                  {lesson.title || "Draft"}
+                </option>
+              ))}
+            </select>
+            {assignmentModalError ? (
+              <p className="confirm-modal-error">{assignmentModalError}</p>
+            ) : null}
+          </label>
+          {lessons.length === 0 ? (
+            <p>Create a lesson before assigning work to students.</p>
+          ) : null}
+        </div>
+        <div className="confirm-modal-actions">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              setStudentToAssign(null)
+              setSelectedAssignmentLessonId("")
+              setAssignmentModalError("")
+              setStudentsMessage("")
+              setStudentsState("idle")
+            }}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={assignLessonToStudent}
+            disabled={studentsState === "saving" || lessons.length === 0}
+          >
+            Assign
+          </Button>
+        </div>
+      </section>
+    </div>
+  ) : null
+
+  const studentDetailsModal = studentToView ? (
+    <div className="student-details-modal" role="dialog" aria-modal="true">
+      <section className="student-details-shell" aria-labelledby="student-details-title">
+        <header className="student-details-header full-page-header">
+          <div className="full-page-title">
+            <h1 id="student-details-title">{studentToView.name}</h1>
+          </div>
+          <Button
+            className="full-page-close"
+            type="button"
+            variant="ghost"
+            onClick={() => {
+              setStudentToView(null)
+              setStudentDetailLessons([])
+              setStudentDetailMessage("")
+              setStudentDetailState("idle")
+            }}
+            aria-label="Close student details"
+            title="Close student details"
+          >
+            Close
+          </Button>
+        </header>
+
+        <div className="student-details-content">
+          <aside className="student-profile-panel" aria-label="Student profile">
+            <div className="library-header">
+              <h2>Student</h2>
+            </div>
+            <div className="library-item student-profile-card">
+              <span className="library-item-icon student-avatar" aria-hidden="true">
+                {studentToView.name.slice(0, 1).toUpperCase()}
+              </span>
+              <span>
+                <strong>{studentToView.name}</strong>
+                <small>{studentToView.email ?? "No email yet"}</small>
+              </span>
+              <span aria-hidden="true" />
+            </div>
+            <dl className="student-detail-list">
+              <div className="library-item student-detail-item">
+                <dt>
+                  <span className="library-item-icon" aria-hidden="true">
+                    <BookOpen />
+                  </span>
+                  <span>
+                    <strong>Assigned lessons</strong>
+                    <small>{formatCount(studentToView.assigned_lessons_count, "lesson")}</small>
+                  </span>
+                </dt>
+                <dd className="sr-only">
+                  {formatCount(studentToView.assigned_lessons_count, "lesson")}
+                </dd>
+              </div>
+              <div className="library-item student-detail-item">
+                <dt>
+                  <span className="library-item-icon" aria-hidden="true">
+                    <CalendarDays />
+                  </span>
+                  <span>
+                    <strong>Added</strong>
+                    <small>{formatSavedDate(studentToView.created_at)}</small>
+                  </span>
+                </dt>
+                <dd className="sr-only">{formatSavedDate(studentToView.created_at)}</dd>
+              </div>
+              <div className="library-item student-detail-item">
+                <dt>
+                  <span className="library-item-icon" aria-hidden="true">
+                    <Mail />
+                  </span>
+                  <span>
+                    <strong>Student ID</strong>
+                    <small>{studentToView.id}</small>
+                  </span>
+                </dt>
+                <dd className="sr-only">{studentToView.id}</dd>
+              </div>
+            </dl>
+          </aside>
+
+          <main className="assigned-lessons-panel">
+            <div className="assigned-lessons-header">
+              <h3>Assigned lessons</h3>
+              <span>{formatCount(studentDetailLessons.length, "lesson")}</span>
+              {studentDetailState === "error" && studentDetailMessage ? (
+                <p className="save-status save-status-error">
+                  {studentDetailMessage}
+                </p>
+              ) : null}
+            </div>
+
+            {studentDetailState === "loading" ? (
+              <div className="assigned-lessons-empty">
+                <BookOpen />
+                <p>Loading assigned lessons...</p>
+              </div>
+            ) : studentDetailLessons.length === 0 ? (
+              <div className="assigned-lessons-empty">
+                <BookOpen />
+                <p>{studentDetailMessage || "No lessons assigned yet"}</p>
+              </div>
+            ) : (
+              <div className="assigned-lessons-list">
+                {studentDetailLessons.map((assignment) => (
+                  <article key={assignment.id} className="assigned-lesson-card">
+                    <div className="assigned-lesson-main">
+                      <BookOpen aria-hidden="true" />
+                      <div>
+                        <h4>{assignment.lessons?.title || "Untitled lesson"}</h4>
+                        <div className="assigned-lesson-meta">
+                          <span
+                            className={getStatusBadgeClass(
+                              assignment.lessons?.status ?? "draft"
+                            )}
+                          >
+                            {assignment.lessons?.status ?? "draft"}
+                          </span>
+                          <span className={getStatusBadgeClass(assignment.status)}>
+                            {assignment.status.replace("_", " ")}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="assigned-lesson-progress">
+                      <span>{assignment.progress}%</span>
+                      <div
+                        className="progress-track"
+                        aria-label={`${assignment.progress}% progress`}
+                      >
+                        <span style={{ width: `${assignment.progress}%` }} />
+                      </div>
+                    </div>
+                    <div className="assigned-lesson-date">
+                      <CalendarDays aria-hidden="true" />
+                      <span>{formatSavedDate(assignment.created_at)}</span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </main>
+        </div>
+      </section>
+    </div>
+  ) : null
+
   const deleteConfirmModal = lessonToDelete ? (
     <div className="confirm-modal-backdrop" role="presentation">
       <section
@@ -2355,14 +2785,44 @@ function App() {
 
   return (
     <>
-      {renderAppShell(viewMode === "dashboard" ? dashboardPage : savedLessonsPage)}
+      {authState === "loading" && !tutorProfile ? (
+        <main className="auth-screen">
+          <section className="auth-panel">
+            <div className="launch-icon" aria-hidden="true">
+              <BookOpen />
+            </div>
+            <p className="auth-message">{authMessage || "Loading..."}</p>
+          </section>
+        </main>
+      ) : tutorProfile ? (
+        <AppShell
+          viewMode={viewMode}
+          onNavigate={navigateToPage}
+          onLoadLessons={loadLessons}
+          onLoadStudents={loadStudents}
+          tutorProfile={tutorProfile}
+          onSignOut={handleSignOut}
+        >
+          {viewMode === "dashboard"
+            ? dashboardPage
+            : viewMode === "students"
+              ? studentsPage
+              : savedLessonsPage}
+        </AppShell>
+      ) : (
+        <AuthScreen
+          mode={authViewMode}
+          onModeChange={navigateToAuthPage}
+          onAuthenticated={refreshAuthenticatedTutor}
+          statusMessage={authState === "error" ? authMessage : ""}
+        />
+      )}
       {builderModal}
+      {addStudentModal}
+      {assignLessonModal}
+      {studentDetailsModal}
       {deleteConfirmModal}
-      {toast ? (
-        <div className="toast" role="status" aria-live="polite">
-          {toast.message}
-        </div>
-      ) : null}
+      {toast ? <Toast message={toast.message} /> : null}
     </>
   )
 }
