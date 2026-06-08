@@ -75,6 +75,39 @@ Dashboard - це стартова робоча сторінка автора.
 
 Ціль dashboard: дати автору одну очевидну дію - створити новий урок.
 
+### Dashboard UI conventions
+
+Dashboard uses `Tutor workspace` naming. Do not mix `Teacher` and `Tutor` in
+the same tutor-side experience.
+
+Dashboard section titles such as `Recent lessons`, `Lesson status`, and
+`Students` are section-level H2 headings. They should stay visually smaller than
+page titles and use the same size/weight treatment across dashboard panels.
+
+Dashboard copy should feel like product UI, not marketing copy. Prefer direct
+workspace language such as:
+
+```text
+Keep lessons, students, and assignments organized in one workspace.
+```
+
+Student states on tutor-side surfaces use:
+
+```text
+pending
+active
+```
+
+Do not show `invited` as the visible status label. Pending students may show
+regenerate invite actions; active students should not show invite-link actions.
+
+Dashboard status pills should share one visual system across lesson and student
+states: same radius, padding, font size, and weight. Active/published states use
+the positive green treatment; pending/draft states use the neutral treatment.
+
+Dashboard student rows use a compact row layout with a block-like avatar,
+student details in the middle, and a fixed status pill on the right.
+
 ## Lesson Builder As Full-Page Modal
 
 Lesson builder - це не окрема навігаційна сторінка MVP, а full-page modal поверх app shell.
@@ -113,6 +146,23 @@ Builder має:
 - дію `Open`
 
 Після збереження нового уроку він має з'явитися в цій таблиці.
+
+## Assign Modal UI Rules
+
+Assign lesson modal використовується після `Publish`, з lessons grid і зі students grid.
+
+Draft lessons cannot be assigned to students. Any `Assign lesson` action for a
+draft lesson must be disabled or hidden until the lesson is published.
+
+Якщо teacher призначає один lesson кільком students, поле `Students` має бути dropdown multiselect, а не видимий список checkbox cards.
+
+Правила для multiselect:
+
+- placeholder має збігатися зі стилем звичайного select placeholder: normal font weight, same color, same height
+- chevron має бути праворуч, fixed-size, без зміщення при довгому тексті
+- після вибору student dropdown закривається
+- selected state показується галочкою всередині dropdown option
+- trigger label: `Choose students`, student name для одного вибраного, або `{n} students selected`
 
 Базовий flow:
 
@@ -605,6 +655,41 @@ supabase/008_move_legacy_mvp_data_to_auth_tutor.sql
 ### Student flow is assignment-only
 
 Поточний `student` шар - це tutor-side management. Student login, проходження уроку, збереження відповідей і results ще не реалізовані.
+
+### Pending student invite flow
+
+Tutor-created students use a pending activation flow:
+
+```text
+Tutor adds student
+↓
+Edge Function creates Supabase Auth user and student_invites row
+↓
+Supabase sends invite email to the student
+↓
+Student opens /signup/student?token=...
+↓
+Frontend loads invite details by token
+↓
+Student enters password only
+↓
+Edge Function sets password and activates the invite
+↓
+student_invites.status = accepted
+tutor_students row is created
+student appears as active
+```
+
+`student_invites` remains necessary even when the Auth user is created
+immediately. It stores tutor ownership, pending/accepted state, expiry, token
+hash, and pre-activation lesson assignments.
+
+The student invite screen must not ask for name or email. Those values come from
+the invite token through `get_student_invite(token)`. The student only sets a
+password.
+
+Auth admin actions are performed only inside Supabase Edge Functions with the
+service role key. The browser client never receives service role credentials.
 
 ### Published lessons are locked for edit
 

@@ -1,11 +1,11 @@
 import { supabase } from "@/lib/supabase"
-import { type TutorProfile } from "@/types/auth"
+import { type UserProfile, type UserRole } from "@/types/auth"
 
 export function getAuthRequiredMessage() {
   return "Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY first"
 }
 
-export async function signInTutor(email: string, password: string) {
+export async function signIn(email: string, password: string) {
   if (!supabase) {
     return { data: null, error: new Error(getAuthRequiredMessage()) }
   }
@@ -28,6 +28,29 @@ export async function signUpTutor(name: string, email: string, password: string)
       data: {
         name,
         role: "tutor",
+      },
+    },
+  })
+}
+
+export async function signUpStudent(
+  name: string,
+  email: string,
+  password: string,
+  emailRedirectTo?: string
+) {
+  if (!supabase) {
+    return { data: null, error: new Error(getAuthRequiredMessage()) }
+  }
+
+  return supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      emailRedirectTo,
+      data: {
+        name,
+        role: "student",
       },
     },
   })
@@ -72,11 +95,30 @@ export async function ensureTutorProfile(
   email: string | null,
   fallbackName: string
 ) {
+  const result = await ensureUserProfile(userId, email, fallbackName, "tutor")
+
+  if (result.error) {
+    return result
+  }
+
+  if (result.data?.role !== "tutor") {
+    return { data: null, error: new Error("Only tutor accounts can open this app") }
+  }
+
+  return result
+}
+
+export async function ensureUserProfile(
+  userId: string,
+  email: string | null,
+  fallbackName: string,
+  fallbackRole: UserRole = "tutor"
+) {
   if (!supabase) {
     return { data: null, error: new Error(getAuthRequiredMessage()) }
   }
 
-  const name = fallbackName.trim() || email?.split("@")[0] || "Tutor"
+  const name = fallbackName.trim() || email?.split("@")[0] || "User"
 
   const existingProfile = await supabase
     .from("users")
@@ -89,10 +131,6 @@ export async function ensureTutorProfile(
   }
 
   if (existingProfile.data) {
-    if (existingProfile.data.role !== "tutor") {
-      return { data: null, error: new Error("Only tutor accounts can open this app") }
-    }
-
     const { data, error } = await supabase
       .from("users")
       .update({
@@ -103,7 +141,7 @@ export async function ensureTutorProfile(
       .single()
 
     return {
-      data: data as TutorProfile | null,
+      data: data as UserProfile | null,
       error,
     }
   }
@@ -114,7 +152,7 @@ export async function ensureTutorProfile(
       id: userId,
       email,
       name,
-      role: "tutor",
+      role: fallbackRole,
       must_change_password: false,
     })
     .select("id,email,name,role")
@@ -124,9 +162,5 @@ export async function ensureTutorProfile(
     return { data: null, error }
   }
 
-  if (data.role !== "tutor") {
-    return { data: null, error: new Error("Only tutor accounts can open this app") }
-  }
-
-  return { data: data as TutorProfile, error: null }
+  return { data: data as UserProfile, error: null }
 }

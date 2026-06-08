@@ -1,4 +1,10 @@
-import { type KeyboardEvent, useEffect, useRef, useState } from "react"
+import {
+  type CSSProperties,
+  type KeyboardEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react"
 import {
   ArrowDown,
   ArrowUp,
@@ -20,11 +26,11 @@ import {
 } from "lucide-react"
 
 import { AppShell } from "@/components/app-shell"
-import { AuthScreen } from "@/components/auth-screen"
+import { AuthScreen, StudentInviteScreen } from "@/components/auth-screen"
 import { Toast } from "@/components/toast"
 import { Button } from "@/components/ui/button"
 import {
-  ensureTutorProfile,
+  ensureUserProfile,
   getCurrentSession,
   onAuthSessionChange,
   signOutTutor,
@@ -45,9 +51,12 @@ import {
 } from "@/lib/lesson-elements"
 import {
   assignLessonRecord,
-  createStudentRecord,
+  createStudentInvite,
+  deleteStudentRecord,
+  fetchStudentInviteAssignments,
   fetchStudentAssignments,
   fetchStudents,
+  regenerateStudentInviteLink,
 } from "@/lib/student-api"
 import { formatCount, formatSavedDate, getStatusBadgeClass } from "@/lib/format"
 import {
@@ -58,13 +67,19 @@ import {
   type FillBlanksElement,
   type LessonElement,
   type LessonMode,
+  type LessonRow,
   type LessonStatus,
   type LessonStatusFilter,
   type SaveState,
   type SavedLessonRow,
   type ToastState,
 } from "@/types/lesson"
-import { type TutorProfile } from "@/types/auth"
+import {
+  type StudentProfile,
+  type TutorProfile,
+  type UserRole,
+  type UserProfile,
+} from "@/types/auth"
 import {
   type AssignedLessonRow,
   type StudentRow,
@@ -107,6 +122,17 @@ function getFloatingMenuPlacement(trigger: HTMLElement | undefined, menuHeight: 
   return "bottom"
 }
 
+function getMeasuredFloatingMenuPlacement(
+  trigger: HTMLElement | null,
+  menu: HTMLElement | null
+) {
+  if (!trigger || !menu) {
+    return "bottom"
+  }
+
+  return getFloatingMenuPlacement(trigger, menu.getBoundingClientRect().height)
+}
+
 function getPageFromHash(): AppPage {
   const hashPage = window.location.hash.replace(/^#\/?/, "")
 
@@ -125,6 +151,24 @@ function getAuthPageFromHash(): AuthPage {
   }
 
   return "sign-in"
+}
+
+function getStudentInviteToken() {
+  const urlParams = new URLSearchParams(window.location.search)
+  const directToken = urlParams.get("token")
+
+  if (window.location.pathname === "/signup/student" && directToken) {
+    return directToken
+  }
+
+  const hash = window.location.hash.replace(/^#\/?/, "")
+  const [hashPath, hashQuery = ""] = hash.split("?")
+
+  if (hashPath !== "signup/student") {
+    return null
+  }
+
+  return new URLSearchParams(hashQuery).get("token")
 }
 
 function getHashForPage(page: AppPage) {
@@ -169,11 +213,18 @@ function App() {
   const [studentSearchQuery, setStudentSearchQuery] = useState("")
   const [isAddStudentOpen, setIsAddStudentOpen] = useState(false)
   const [newStudentName, setNewStudentName] = useState("")
+  const [newStudentEmail, setNewStudentEmail] = useState("")
   const [studentModalError, setStudentModalError] = useState("")
   const [studentToAssign, setStudentToAssign] = useState<StudentRow | null>(
     null
   )
+  const [lessonToAssign, setLessonToAssign] = useState<LessonRow | null>(
+    null
+  )
   const [studentToView, setStudentToView] = useState<StudentRow | null>(null)
+  const [studentToDelete, setStudentToDelete] = useState<StudentRow | null>(
+    null
+  )
   const [studentDetailLessons, setStudentDetailLessons] = useState<
     AssignedLessonRow[]
   >([])
@@ -182,6 +233,10 @@ function App() {
   const [studentDetailMessage, setStudentDetailMessage] = useState("")
   const [selectedAssignmentLessonId, setSelectedAssignmentLessonId] =
     useState("")
+  const [selectedAssignmentStudentIds, setSelectedAssignmentStudentIds] =
+    useState<string[]>([])
+  const [isAssignmentStudentSelectOpen, setIsAssignmentStudentSelectOpen] =
+    useState(false)
   const [assignmentModalError, setAssignmentModalError] = useState("")
   const [lessonToDelete, setLessonToDelete] = useState<SavedLessonRow | null>(
     null
@@ -198,8 +253,15 @@ function App() {
   )
   const [authState, setAuthState] = useState<SaveState>("loading")
   const [authMessage, setAuthMessage] = useState("Checking session...")
-  const [tutorProfile, setTutorProfile] = useState<TutorProfile | null>(null)
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
+  const [studentInviteToken, setStudentInviteToken] = useState(() =>
+    getStudentInviteToken()
+  )
 
+  const tutorProfile: TutorProfile | null =
+    userProfile?.role === "tutor" ? userProfile : null
+  const studentProfile: StudentProfile | null =
+    userProfile?.role === "student" ? userProfile : null
   const currentTutorId = tutorProfile?.id ?? null
 
   function showToast(message: string) {
@@ -231,41 +293,50 @@ function App() {
     window.location.hash = nextHash
   }
 
-  async function bootstrapTutorProfile(
+  async function bootstrapUserProfile(
     userId: string | null,
     email: string | null,
-    fallbackName = ""
+    fallbackName = "",
+    fallbackRole: UserRole = "tutor"
   ) {
     if (!userId) {
-      setTutorProfile(null)
+      setUserProfile(null)
       setAuthState("idle")
       setAuthMessage("")
       return
     }
 
     setAuthState("loading")
-    setAuthMessage("Loading tutor profile...")
+    setAuthMessage("Loading profile...")
 
-    const { data, error } = await ensureTutorProfile(userId, email, fallbackName)
+    const { data, error } = await ensureUserProfile(
+      userId,
+      email,
+      fallbackName,
+      fallbackRole
+    )
 
     if (error) {
-      setTutorProfile(null)
+      setUserProfile(null)
       setAuthState("error")
       setAuthMessage(error.message)
       return
     }
 
-    setTutorProfile(data)
+    setUserProfile(data)
     setAuthState("idle")
     setAuthMessage("")
 
     const hashPage = window.location.hash.replace(/^#\/?/, "")
-    if (hashPage === "sign-in" || hashPage === "create-account" || !hashPage) {
+    if (
+      data?.role === "tutor" &&
+      (hashPage === "sign-in" || hashPage === "create-account" || !hashPage)
+    ) {
       navigateToPage("dashboard")
     }
   }
 
-  async function refreshAuthenticatedTutor() {
+  async function refreshAuthenticatedUser() {
     const { data, error } = await getCurrentSession()
 
     if (error) {
@@ -274,11 +345,22 @@ function App() {
       return
     }
 
-    await bootstrapTutorProfile(
+    await bootstrapUserProfile(
       data.session?.user.id ?? null,
       data.session?.user.email ?? null,
-      data.session?.user.user_metadata?.name ?? ""
+      data.session?.user.user_metadata?.name ?? "",
+      data.session?.user.user_metadata?.role === "student"
+        ? "student"
+        : "tutor"
     )
+  }
+
+  async function handleStudentInviteAccepted() {
+    const nextUrl = `${window.location.origin}${window.location.pathname}`
+
+    window.history.replaceState(null, "", nextUrl)
+    setStudentInviteToken(null)
+    await refreshAuthenticatedUser()
   }
 
   async function handleSignOut() {
@@ -289,7 +371,7 @@ function App() {
       return
     }
 
-    setTutorProfile(null)
+    setUserProfile(null)
     setLessons([])
     setStudents([])
     setElements([])
@@ -349,21 +431,22 @@ function App() {
 
   async function createStudent() {
     if (!currentTutorId) {
-      setStudentModalError("Sign in to create students")
+      setStudentModalError("Sign in to invite students")
       return
     }
 
     const studentName = newStudentName.trim()
+    const studentEmail = newStudentEmail.trim()
 
-    if (!studentName) {
-      setStudentModalError("Student name is required")
+    if (!studentName || !studentEmail) {
+      setStudentModalError("Student name and email are required")
       return
     }
 
     setStudentsState("saving")
-    setStudentsMessage("Creating student...")
+    setStudentsMessage("Creating invite...")
 
-    const { error } = await createStudentRecord(studentName, currentTutorId)
+    const { data, error } = await createStudentInvite(studentEmail, studentName)
 
     if (error) {
       setStudentsState("idle")
@@ -371,24 +454,117 @@ function App() {
       return
     }
 
+    if (!data?.invite_id) {
+      setStudentsState("idle")
+      setStudentModalError("Invite was not created")
+      return
+    }
+
+    closeAddStudentModal()
+    showToast("Student invited")
+    await loadStudents()
+  }
+
+  async function regenerateInviteLink(student: StudentRow) {
+    if (!student.invite_id) {
+      return
+    }
+
+    setOpenStudentActionsId(null)
+    setStudentsState("saving")
+    setStudentsMessage("Regenerating invite link...")
+
+    const { data, error } = await regenerateStudentInviteLink(student.invite_id)
+
+    if (error) {
+      setStudentsState("idle")
+      showToast(error.message)
+      return
+    }
+
+    if (!data?.token) {
+      setStudentsState("idle")
+      showToast("Invite link was not regenerated")
+      return
+    }
+
+    const inviteUrl = `${window.location.origin}/signup/student?token=${data.token}`
+
+    try {
+      await navigator.clipboard.writeText(inviteUrl)
+      showToast("Invite link regenerated and copied")
+    } catch {
+      showToast("Invite link regenerated. Copy failed.")
+    }
+
+    setStudentsState("idle")
+    setStudentsMessage("")
+  }
+
+  async function deleteStudent(student: StudentRow) {
+    setStudentsState("saving")
+    setStudentsMessage("Deleting student...")
+
+    const { error } = await deleteStudentRecord(student)
+
+    if (error) {
+      setStudentsState("error")
+      setStudentsMessage(error.message)
+      return
+    }
+
+    setStudentToDelete(null)
+    setStudentToView((currentStudent) =>
+      currentStudent?.id === student.id ? null : currentStudent
+    )
+    setStudentToAssign((currentStudent) =>
+      currentStudent?.id === student.id ? null : currentStudent
+    )
+    setSelectedAssignmentStudentIds((studentIds) =>
+      studentIds.filter((studentId) => studentId !== student.id)
+    )
+    setStudentsState("idle")
+    setStudentsMessage("")
+    showToast("Student deleted")
+    await loadStudents()
+  }
+
+  function closeAddStudentModal() {
     setIsAddStudentOpen(false)
     setNewStudentName("")
+    setNewStudentEmail("")
     setStudentModalError("")
-    setStudentsState("saved")
     setStudentsMessage("")
-    showToast("Student added")
-    await loadStudents()
+    setStudentsState("idle")
   }
 
   async function openAssignLesson(student: StudentRow) {
     setOpenStudentActionsId(null)
     setStudentToAssign(student)
+    setLessonToAssign(null)
     setSelectedAssignmentLessonId("")
+    setSelectedAssignmentStudentIds([])
+    setIsAssignmentStudentSelectOpen(false)
     setAssignmentModalError("")
     setStudentsMessage("")
 
     if (lessons.length === 0 && lessonsState !== "loading") {
       await loadLessons()
+    }
+  }
+
+  async function openAssignStudents(lesson: LessonRow) {
+    setOpenLessonActionsId(null)
+    setLessonToAssign(lesson)
+    setStudentToAssign(null)
+    setSelectedAssignmentLessonId(lesson.id)
+    setSelectedAssignmentStudentIds([])
+    setIsAssignmentStudentSelectOpen(false)
+    setAssignmentModalError("")
+    setStudentsMessage("")
+
+    if (students.length === 0 && studentsState !== "loading") {
+      await loadStudents()
     }
   }
 
@@ -406,7 +582,10 @@ function App() {
 
     setStudentDetailState("loading")
 
-    const { data, error } = await fetchStudentAssignments(student.id, currentTutorId)
+    const { data, error } =
+      student.status === "pending" && student.invite_id
+        ? await fetchStudentInviteAssignments(student.invite_id, currentTutorId)
+        : await fetchStudentAssignments(student.id, currentTutorId)
 
     if (error) {
       setStudentDetailState("error")
@@ -419,24 +598,39 @@ function App() {
     setStudentDetailMessage(data?.length ? "" : "No lessons assigned yet")
   }
 
-  async function assignLessonToStudent() {
-    if (!studentToAssign || !currentTutorId) {
+  async function assignLesson() {
+    if (!currentTutorId) {
       return
     }
 
-    if (!selectedAssignmentLessonId) {
+    const assignmentLessonId = lessonToAssign?.id ?? selectedAssignmentLessonId
+
+    if (!assignmentLessonId) {
       setAssignmentModalError("Choose a lesson to assign")
+      return
+    }
+
+    const studentsToAssign = lessonToAssign
+      ? students.filter((student) => selectedAssignmentStudentIds.includes(student.id))
+      : studentToAssign
+        ? [studentToAssign]
+        : []
+
+    if (studentsToAssign.length === 0) {
+      setAssignmentModalError("Choose at least one student")
       return
     }
 
     setStudentsState("saving")
     setStudentsMessage("Assigning lesson...")
 
-    const { error } = await assignLessonRecord(
-      studentToAssign.id,
-      selectedAssignmentLessonId,
-      currentTutorId
+    const results = await Promise.all(
+      studentsToAssign.map((student) =>
+        assignLessonRecord(student, assignmentLessonId, currentTutorId)
+      )
     )
+    const failedResult = results.find((result) => result.error)
+    const error = failedResult?.error
 
     if (error) {
       setStudentsState("idle")
@@ -450,13 +644,20 @@ function App() {
     }
 
     setStudentToAssign(null)
+    setLessonToAssign(null)
     setSelectedAssignmentLessonId("")
+    setSelectedAssignmentStudentIds([])
+    setIsAssignmentStudentSelectOpen(false)
     setAssignmentModalError("")
     setStudentsState("saved")
     setStudentsMessage("")
-    showToast("Lesson assigned")
+    showToast(
+      studentsToAssign.length === 1
+        ? "Lesson assigned"
+        : `Lesson assigned to ${studentsToAssign.length} students`
+    )
     await loadStudents()
-    if (studentToView?.id === studentToAssign.id) {
+    if (studentToAssign && studentToView?.id === studentToAssign.id) {
       await openStudentDetails(studentToAssign)
     }
   }
@@ -468,6 +669,7 @@ function App() {
 
     function handleHashChange() {
       const hashPage = window.location.hash.replace(/^#\/?/, "")
+      setStudentInviteToken(getStudentInviteToken())
 
       if (hashPage === "sign-in" || hashPage === "create-account") {
         setAuthViewMode(getAuthPageFromHash())
@@ -483,12 +685,27 @@ function App() {
   }, [])
 
   useEffect(() => {
-    refreshAuthenticatedTutor()
+    if (studentInviteToken) {
+      setAuthState("idle")
+      setAuthMessage("")
+      return
+    }
+
+    refreshAuthenticatedUser()
 
     return onAuthSessionChange((userId, email) => {
-      bootstrapTutorProfile(userId, email)
+      getCurrentSession().then(({ data }) => {
+        bootstrapUserProfile(
+          userId,
+          email,
+          data.session?.user.user_metadata?.name ?? "",
+          data.session?.user.user_metadata?.role === "student"
+            ? "student"
+            : "tutor"
+        )
+      })
     })
-  }, [])
+  }, [studentInviteToken])
 
   useEffect(() => {
     if (!currentTutorId) {
@@ -503,6 +720,28 @@ function App() {
       loadStudents()
     }
   }, [currentTutorId, viewMode])
+
+  useEffect(() => {
+    function handleActionMenuOutsideClick(event: PointerEvent) {
+      const target = event.target
+
+      if (
+        target instanceof Element &&
+        target.closest(".lesson-actions")
+      ) {
+        return
+      }
+
+      setOpenLessonActionsId(null)
+      setOpenStudentActionsId(null)
+    }
+
+    document.addEventListener("pointerdown", handleActionMenuOutsideClick)
+
+    return () => {
+      document.removeEventListener("pointerdown", handleActionMenuOutsideClick)
+    }
+  }, [])
 
   useEffect(() => {
     if (!currentTutorId) {
@@ -692,6 +931,43 @@ function App() {
       )
       .join("")
   }
+
+  useEffect(() => {
+    const placementUpdates = new Map<number, "bottom" | "top">()
+
+    for (const element of elements) {
+      if (element.type !== "fill-blanks" || element.activeChoiceBlankId === null) {
+        continue
+      }
+
+      const trigger = document.querySelector<HTMLElement>(
+        `[data-blank-choice-trigger-id="${element.id}-${element.activeChoiceBlankId}"]`
+      )
+      const menu = document.querySelector<HTMLElement>(
+        `[data-blank-choice-menu-id="${element.id}-${element.activeChoiceBlankId}"]`
+      )
+      const placement = getMeasuredFloatingMenuPlacement(trigger, menu)
+
+      if (placement !== element.activeChoiceBlankPlacement) {
+        placementUpdates.set(element.id, placement)
+      }
+    }
+
+    if (placementUpdates.size === 0) {
+      return
+    }
+
+    setElements((currentElements) =>
+      currentElements.map((element) =>
+        element.type === "fill-blanks" && placementUpdates.has(element.id)
+          ? {
+              ...element,
+              activeChoiceBlankPlacement: placementUpdates.get(element.id)!,
+            }
+          : element
+      )
+    )
+  }, [elements])
 
   function rememberFillBlankCursor(
     elementId: number,
@@ -1342,6 +1618,16 @@ function App() {
     )
     loadLessons()
     setIsBuilderOpen(false)
+    if (nextStatus === "published") {
+      setLessonToAssign(data)
+      setStudentToAssign(null)
+      setSelectedAssignmentLessonId(data.id)
+      setSelectedAssignmentStudentIds([])
+      setAssignmentModalError("")
+      if (students.length === 0 && studentsState !== "loading") {
+        loadStudents()
+      }
+    }
     navigateToPage("lessons")
   }
 
@@ -1410,6 +1696,44 @@ function App() {
       studentEmail.toLowerCase().includes(normalizedStudentSearchQuery)
     )
   })
+  const selectedAssignmentStudents = students.filter((student) =>
+    selectedAssignmentStudentIds.includes(student.id)
+  )
+  const assignmentStudentSelectLabel =
+    selectedAssignmentStudents.length === 0
+      ? "Choose students"
+      : selectedAssignmentStudents.length === 1
+        ? selectedAssignmentStudents[0].name
+        : `${selectedAssignmentStudents.length} students selected`
+  const activeStudentsCount = students.filter(
+    (student) => student.status === "active"
+  ).length
+  const invitedStudentsCount = students.length - activeStudentsCount
+  const assignedLessonsTotal = students.reduce(
+    (total, student) => total + student.assigned_lessons_count,
+    0
+  )
+  const publishedPercent =
+    lessons.length === 0
+      ? 0
+      : Math.round((publishedLessons.length / lessons.length) * 100)
+  const dashboardLessonBars = [
+    {
+      label: "Draft",
+      value: draftLessons.length,
+      className: "draft",
+    },
+    {
+      label: "Published",
+      value: publishedLessons.length,
+      className: "published",
+    },
+  ]
+  const maxDashboardBarValue = Math.max(
+    1,
+    ...dashboardLessonBars.map((item) => item.value)
+  )
+  const recentStudents = students.slice(0, 4)
   const isEditMode = lessonMode === "edit"
   const builderPageTitle =
     lessonId === null
@@ -1420,70 +1744,161 @@ function App() {
 
   const dashboardPage = (
     <section className="dashboard-page" aria-labelledby="dashboard-title">
-      <header className="dashboard-header">
-        <div>
+      <header className="dashboard-hero">
+        <div className="dashboard-hero-copy">
+          <span>Tutor workspace</span>
           <h1 id="dashboard-title">Create and manage lessons</h1>
+          <p>
+            Keep lessons, students, and assignments organized in one workspace.
+          </p>
         </div>
-        <Button onClick={createNewLesson}>
-          <Plus />
-          New lesson
-        </Button>
+        <div className="dashboard-hero-actions">
+          <Button onClick={createNewLesson}>New lesson</Button>
+        </div>
       </header>
 
       <div className="dashboard-stats" aria-label="Lesson stats">
-        <article>
+        <article className="dashboard-stat-card stat-mint">
           <span>Total lessons</span>
-          <strong>{formatCount(lessons.length, "lesson")}</strong>
+          <strong>{lessons.length}</strong>
+          <small>{formatCount(lessons.length, "lesson")} in library</small>
         </article>
-        <article>
-          <span>Drafts</span>
-          <strong>{formatCount(draftLessons.length, "draft")}</strong>
+        <article className="dashboard-stat-card stat-violet">
+          <span>Students</span>
+          <strong>{students.length}</strong>
+          <small>{formatCount(activeStudentsCount, "active student")}</small>
         </article>
-        <article>
+        <article className="dashboard-stat-card stat-amber">
+          <span>Assignments</span>
+          <strong>{assignedLessonsTotal}</strong>
+          <small>{formatCount(invitedStudentsCount, "pending student")}</small>
+        </article>
+        <article className="dashboard-stat-card stat-sky">
           <span>Published</span>
-          <strong>
-            {formatCount(publishedLessons.length, "published lesson")}
-          </strong>
+          <strong>{publishedPercent}%</strong>
+          <small>{formatCount(publishedLessons.length, "published lesson")}</small>
         </article>
       </div>
 
-      <div className="dashboard-panel">
-        {lessons.length === 0 ? (
-          <div className="empty-state">
-            <Layers3 />
-            <h3>No saved lessons yet</h3>
-            <p>Create your first lesson and save it to see it here.</p>
-          </div>
-        ) : (
-          <div className="dashboard-recent">
-            <div>
-              <h2>Recent lessons</h2>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  navigateToPage("lessons")
-                  loadLessons()
-                }}
-              >
-                <BookOpen />
-                View all
-              </Button>
+      <div className="dashboard-grid">
+        <section className="dashboard-panel dashboard-lessons-panel">
+          {lessons.length === 0 ? (
+            <div className="empty-state">
+              <Layers3 />
+              <h3>No saved lessons yet</h3>
+              <p>Create your first lesson and save it to see it here.</p>
             </div>
-            <ul>
-              {lessons.slice(0, 5).map((lesson) => (
-                <li key={lesson.id}>
-                  <span>
-                    <strong>{lesson.title || "Draft"}</strong>
-                    <small>{formatSavedDate(lesson.updated_at)}</small>
-                  </span>
-                  <button type="button" onClick={() => openSavedLesson(lesson)}>
-                    {lesson.status === "published" ? "View" : "Edit"}
-                  </button>
+          ) : (
+            <div className="dashboard-recent">
+              <div>
+                <h2>Recent lessons</h2>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    navigateToPage("lessons")
+                    loadLessons()
+                  }}
+                >
+                  View all
+                </Button>
+              </div>
+              <ul>
+                {lessons.slice(0, 5).map((lesson) => (
+                  <li key={lesson.id}>
+                    <span>
+                      <strong>{lesson.title || "Draft"}</strong>
+                      <small>
+                        {formatSavedDate(lesson.updated_at)} ·{" "}
+                        {formatCount(lesson.blocks.length, "block")}
+                      </small>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => openSavedLesson(lesson)}
+                      className={`dashboard-status-pill ${lesson.status}`}
+                    >
+                      {lesson.status}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </section>
+
+        <section className="dashboard-panel dashboard-chart-panel">
+          <div className="dashboard-panel-heading">
+            <div>
+              <h2>Lesson status</h2>
+              <p>Published lessons vs drafts in your library</p>
+            </div>
+            <div
+              className="dashboard-donut"
+              style={{ "--progress": `${publishedPercent}%` } as CSSProperties}
+              aria-label={`${publishedPercent}% lessons published`}
+            >
+              <span>{publishedPercent}%</span>
+            </div>
+          </div>
+          <div className="dashboard-bars" aria-label="Lesson status chart">
+            {dashboardLessonBars.map((item) => (
+              <div className="dashboard-bar-row" key={item.label}>
+                <span>{item.label}</span>
+                <div>
+                  <i
+                    className={item.className}
+                    style={{
+                      width: `${Math.max(
+                        10,
+                        (item.value / maxDashboardBarValue) * 100
+                      )}%`,
+                    }}
+                  />
+                </div>
+                <strong>{item.value}</strong>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="dashboard-panel dashboard-students-panel">
+          <div className="dashboard-panel-heading">
+            <div>
+              <h2>Students</h2>
+              <p>{formatCount(students.length, "student")} in workspace</p>
+            </div>
+            <Button variant="outline" onClick={() => navigateToPage("students")}>
+              View all
+            </Button>
+          </div>
+          {recentStudents.length === 0 ? (
+            <div className="dashboard-mini-empty">
+              <Users />
+              <span>Add students to start assigning lessons.</span>
+            </div>
+          ) : (
+            <ul className="dashboard-student-list">
+              {recentStudents.map((student) => (
+                <li key={student.id}>
+                  <span aria-hidden="true">{student.name.charAt(0)}</span>
+                  <div>
+                    <strong>{student.name}</strong>
+                    <small>
+                      {formatCount(
+                        student.assigned_lessons_count,
+                        "assigned lesson"
+                      )}
+                    </small>
+                  </div>
+                  <em className={`dashboard-status-pill ${student.status}`}>
+                    {student.status === "active" ? "active" : "pending"}
+                  </em>
                 </li>
               ))}
             </ul>
-          </div>
-        )}
+          )}
+        </section>
+
       </div>
     </section>
   )
@@ -1521,7 +1936,6 @@ function App() {
             </select>
           </label>
           <Button onClick={createNewLesson}>
-            <Plus />
             New lesson
           </Button>
         </div>
@@ -1598,7 +2012,21 @@ function App() {
                                 onClick={() => openSavedLesson(lesson, "student")}
                               >
                                 <Eye />
-                                View
+                                View details
+                              </button>
+	                              <button
+	                                type="button"
+	                                role="menuitem"
+	                                onClick={() => openAssignStudents(lesson)}
+	                                disabled={lesson.status === "draft"}
+	                                title={
+	                                  lesson.status === "draft"
+	                                    ? "Publish this lesson before assigning it"
+	                                    : "Assign lesson"
+	                                }
+	                              >
+	                                <BookOpen />
+	                                Assign lesson
                               </button>
                               <button
                                 type="button"
@@ -1652,8 +2080,12 @@ function App() {
               placeholder="Search by student name"
             />
           </label>
-          <Button onClick={() => setIsAddStudentOpen(true)}>
-            <Plus />
+          <Button
+            onClick={() => {
+              setIsAddStudentOpen(true)
+              setStudentModalError("")
+            }}
+          >
             Add student
           </Button>
         </div>
@@ -1679,26 +2111,36 @@ function App() {
             <p>Adjust the search to see more students.</p>
           </div>
         ) : (
-          <table className="lessons-table">
-            <thead>
-              <tr>
-                <th>Student</th>
-                <th>Email</th>
-                <th>Assigned lessons</th>
-                <th>Added</th>
-                <th>
-                  <span className="sr-only">Actions</span>
-                </th>
+	          <table className="lessons-table">
+	            <thead>
+	              <tr>
+	                <th>Student</th>
+	                <th>Email</th>
+	                <th>Status</th>
+	                <th>Assigned lessons</th>
+	                <th>Added</th>
+	                <th>
+	                  <span className="sr-only">Actions</span>
+	                </th>
               </tr>
             </thead>
-            <tbody>
-              {filteredStudents.map((student) => (
-                <tr key={student.id}>
-                  <td>
-                    <strong>{student.name}</strong>
-                  </td>
-                  <td>{student.email ?? "No email yet"}</td>
-                  <td>
+	            <tbody>
+	              {filteredStudents.map((student) => (
+	                <tr key={student.id}>
+	                  <td>
+	                    <strong>{student.name}</strong>
+	                  </td>
+	                  <td>{student.email ?? "No email yet"}</td>
+	                  <td>
+	                    <span
+	                      className={getStatusBadgeClass(
+	                        student.status === "active" ? "published" : "draft"
+	                      )}
+	                    >
+		                      {student.status === "active" ? "active" : "pending"}
+	                    </span>
+	                  </td>
+	                  <td>
                     {formatCount(
                       student.assigned_lessons_count,
                       "assigned lesson"
@@ -1741,7 +2183,31 @@ function App() {
                             <BookOpen />
                             Assign lesson
                           </button>
-                        </div>
+	                          {student.status === "pending" ? (
+	                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => regenerateInviteLink(student)}
+                            >
+                              <Mail />
+		                              Generate invite link
+	                            </button>
+	                          ) : null}
+	                          <button
+	                            type="button"
+	                            role="menuitem"
+	                            className="danger"
+	                            onClick={() => {
+	                              setOpenStudentActionsId(null)
+	                              setStudentToDelete(student)
+	                              setStudentsMessage("")
+	                              setStudentsState("idle")
+	                            }}
+	                          >
+	                            <Trash2 />
+	                            Delete
+	                          </button>
+	                        </div>
                       ) : null}
                     </div>
                   </td>
@@ -1767,15 +2233,13 @@ function App() {
         <div className="header-actions">
           {lessonStatus === "draft" ? (
             <>
-              {isEditMode ? (
-                <Button
-                  variant="outline"
-                  onClick={saveLesson}
-                  disabled={saveState === "saving"}
-                >
-                  {saveState === "saving" ? "Saving" : "Save draft"}
-                </Button>
-              ) : null}
+              <Button
+                variant="outline"
+                onClick={saveLesson}
+                disabled={saveState === "saving"}
+              >
+                {saveState === "saving" ? "Saving" : "Save draft"}
+              </Button>
               <Button onClick={publishLesson} disabled={saveState === "saving"}>
                 {saveState === "saving" ? "Publishing" : "Publish"}
               </Button>
@@ -1783,7 +2247,7 @@ function App() {
           ) : null}
           <Button
             className="full-page-close"
-            variant="ghost"
+            variant="outline"
             onClick={closeBuilder}
             aria-label="Close builder"
             title="Close builder"
@@ -1886,7 +2350,6 @@ function App() {
                         className="add-option"
                         onClick={() => addRadioOption(element.id)}
                       >
-                        <Plus />
                         Add answer
                       </Button>
                     </article>
@@ -1977,7 +2440,6 @@ function App() {
                         className="add-option"
                         onClick={() => addCheckboxOption(element.id)}
                       >
-                        <Plus />
                         Add answer
                       </Button>
                     </article>
@@ -2245,6 +2707,7 @@ function App() {
                                       <button
                                         type="button"
                                         className="blank-dropdown-trigger compact"
+                                        data-blank-choice-trigger-id={`${element.id}-${blank.id}`}
                                         data-fill-blank-node
                                         data-blank-marker={blank.marker}
                                         onKeyDown={(event) => {
@@ -2275,6 +2738,7 @@ function App() {
 
                                     {element.activeChoiceBlankId === blank.id ? (
                                       <div
+                                        data-blank-choice-menu-id={`${element.id}-${blank.id}`}
                                         className={`blank-dropdown-menu ${
                                           element.activeChoiceBlankPlacement ===
                                           "top"
@@ -2341,7 +2805,6 @@ function App() {
                                             )
                                           }
                                         >
-                                          <Plus />
                                           Add answer
                                         </Button>
                                       </div>
@@ -2502,6 +2965,24 @@ function App() {
               autoFocus
             />
           </label>
+          <label className="modal-field">
+            <span>Email</span>
+            <input
+              type="email"
+              value={newStudentEmail}
+              onChange={(event) => {
+                setNewStudentEmail(event.target.value)
+                setStudentModalError("")
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault()
+                  createStudent()
+                }
+              }}
+              placeholder="student@example.com"
+            />
+          </label>
           {studentModalError ? (
             <p className="confirm-modal-error">{studentModalError}</p>
           ) : null}
@@ -2510,13 +2991,7 @@ function App() {
           <Button
             type="button"
             variant="outline"
-            onClick={() => {
-              setIsAddStudentOpen(false)
-              setNewStudentName("")
-              setStudentModalError("")
-              setStudentsMessage("")
-              setStudentsState("idle")
-            }}
+            onClick={closeAddStudentModal}
           >
             Cancel
           </Button>
@@ -2525,14 +3000,14 @@ function App() {
             onClick={createStudent}
             disabled={studentsState === "saving"}
           >
-            Create
+            Add student
           </Button>
         </div>
       </section>
     </div>
   ) : null
 
-  const assignLessonModal = studentToAssign ? (
+  const assignLessonModal = studentToAssign || lessonToAssign ? (
     <div className="confirm-modal-backdrop" role="presentation">
       <section
         className="confirm-modal add-student-modal"
@@ -2542,33 +3017,110 @@ function App() {
       >
         <div className="confirm-modal-copy">
           <h2 id="assign-lesson-title">Assign lesson</h2>
-          <label className="modal-field">
-            <span>Student</span>
-            <input type="text" value={studentToAssign.name} readOnly />
-          </label>
-          <label className="modal-field">
-            <span>Lesson</span>
-            <select
-              value={selectedAssignmentLessonId}
-              onChange={(event) => {
-                setSelectedAssignmentLessonId(event.target.value)
-                setAssignmentModalError("")
-              }}
-              disabled={lessons.length === 0}
-            >
-              <option value="">Choose lesson</option>
-              {lessons.map((lesson) => (
-                <option key={lesson.id} value={lesson.id}>
-                  {lesson.title || "Draft"}
-                </option>
-              ))}
-            </select>
-            {assignmentModalError ? (
-              <p className="confirm-modal-error">{assignmentModalError}</p>
-            ) : null}
-          </label>
-          {lessons.length === 0 ? (
-            <p>Create a lesson before assigning work to students.</p>
+          {studentToAssign ? (
+            <>
+              <label className="modal-field">
+                <span>Student</span>
+                <input type="text" value={studentToAssign.name} readOnly />
+                {studentToAssign.status === "pending" ? (
+                  <p className="auth-message">
+                    This lesson will unlock after the student accepts the invite.
+                  </p>
+                ) : null}
+              </label>
+              <label className="modal-field">
+                <span>Lesson</span>
+                <select
+                  value={selectedAssignmentLessonId}
+                  onChange={(event) => {
+                    setSelectedAssignmentLessonId(event.target.value)
+                    setAssignmentModalError("")
+                  }}
+                  disabled={lessons.length === 0}
+                >
+                  <option value="">Choose lesson</option>
+                  {lessons.map((lesson) => (
+                    <option key={lesson.id} value={lesson.id}>
+                      {lesson.title || "Draft"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {lessons.length === 0 ? (
+                <p>Create a lesson before assigning work to students.</p>
+              ) : null}
+            </>
+          ) : null}
+          {lessonToAssign ? (
+            <>
+              <label className="modal-field">
+                <span>Lesson</span>
+                <input type="text" value={lessonToAssign.title || "Draft"} readOnly />
+              </label>
+              <div className="modal-field">
+                <span>Students</span>
+                {students.length === 0 ? (
+                  <p>Create or invite a student before assigning this lesson.</p>
+                ) : (
+                  <div className="multi-select">
+                    <button
+                      type="button"
+                      className="multi-select-trigger"
+                      onClick={() =>
+                        setIsAssignmentStudentSelectOpen((isOpen) => !isOpen)
+                      }
+                      aria-haspopup="listbox"
+                      aria-expanded={isAssignmentStudentSelectOpen}
+                    >
+                      <span>{assignmentStudentSelectLabel}</span>
+                      <ChevronDown aria-hidden="true" />
+                    </button>
+                    {isAssignmentStudentSelectOpen ? (
+                      <div className="multi-select-menu" role="listbox">
+                        {students.map((student) => {
+                          const isSelected = selectedAssignmentStudentIds.includes(
+                            student.id
+                          )
+
+                          return (
+                            <button
+                              type="button"
+                              className="multi-select-option"
+                              key={student.id}
+                              role="option"
+                              aria-selected={isSelected}
+                              onClick={() => {
+                                setSelectedAssignmentStudentIds((currentIds) =>
+                                  isSelected
+                                    ? currentIds.filter(
+                                        (studentId) => studentId !== student.id
+                                      )
+                                    : [...currentIds, student.id]
+                                )
+                                setIsAssignmentStudentSelectOpen(false)
+                                setAssignmentModalError("")
+                              }}
+                            >
+                              <span>
+                                <strong>{student.name}</strong>
+                                <small>
+                                  {student.email}
+	                                  {student.status === "pending" ? " · pending" : ""}
+                                </small>
+                              </span>
+                              {isSelected ? <Check aria-hidden="true" /> : null}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+            </>
+          ) : null}
+          {assignmentModalError ? (
+            <p className="confirm-modal-error">{assignmentModalError}</p>
           ) : null}
         </div>
         <div className="confirm-modal-actions">
@@ -2577,7 +3129,10 @@ function App() {
             variant="outline"
             onClick={() => {
               setStudentToAssign(null)
+              setLessonToAssign(null)
               setSelectedAssignmentLessonId("")
+              setSelectedAssignmentStudentIds([])
+              setIsAssignmentStudentSelectOpen(false)
               setAssignmentModalError("")
               setStudentsMessage("")
               setStudentsState("idle")
@@ -2587,8 +3142,11 @@ function App() {
           </Button>
           <Button
             type="button"
-            onClick={assignLessonToStudent}
-            disabled={studentsState === "saving" || lessons.length === 0}
+            onClick={assignLesson}
+            disabled={
+              studentsState === "saving" ||
+              (studentToAssign ? lessons.length === 0 : students.length === 0)
+            }
           >
             Assign
           </Button>
@@ -2783,9 +3341,81 @@ function App() {
     </div>
   ) : null
 
+  const deleteStudentConfirmModal = studentToDelete ? (
+    <div className="confirm-modal-backdrop" role="presentation">
+      <section
+        className="confirm-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-student-title"
+      >
+        <div className="confirm-modal-copy">
+          <h2 id="delete-student-title">Delete student?</h2>
+          <p>
+            Are you sure you want to delete {studentToDelete.name}? This student
+            will lose access to lessons assigned by you.
+          </p>
+          {studentsState === "error" && studentsMessage ? (
+            <p className="confirm-modal-error">{studentsMessage}</p>
+          ) : null}
+        </div>
+        <div className="confirm-modal-actions">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              setStudentToDelete(null)
+              setStudentsMessage("")
+              setStudentsState("idle")
+            }}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            onClick={() => deleteStudent(studentToDelete)}
+            disabled={studentsState === "saving"}
+          >
+            Delete
+          </Button>
+        </div>
+      </section>
+    </div>
+  ) : null
+
+  const studentWorkspace = studentProfile ? (
+    <main className="student-workspace">
+      <section
+        className="student-workspace-panel"
+        aria-labelledby="student-workspace-title"
+      >
+        <div className="launch-icon" aria-hidden="true">
+          <BookOpen />
+        </div>
+        <div className="student-workspace-copy">
+          <p className="eyebrow">Student workspace</p>
+          <h1 id="student-workspace-title">Student dashboard is coming next</h1>
+          <p>
+            Signed in as {studentProfile.name || studentProfile.email}. Assigned
+            lessons will appear here in the next step.
+          </p>
+        </div>
+        <Button type="button" variant="secondary" onClick={handleSignOut}>
+          Log out
+        </Button>
+      </section>
+    </main>
+  ) : null
+
   return (
     <>
-      {authState === "loading" && !tutorProfile ? (
+      {studentInviteToken ? (
+        <StudentInviteScreen
+          token={studentInviteToken}
+          onAccepted={handleStudentInviteAccepted}
+        />
+      ) : authState === "loading" && !userProfile ? (
         <main className="auth-screen">
           <section className="auth-panel">
             <div className="launch-icon" aria-hidden="true">
@@ -2809,11 +3439,13 @@ function App() {
               ? studentsPage
               : savedLessonsPage}
         </AppShell>
+      ) : studentProfile ? (
+        studentWorkspace
       ) : (
         <AuthScreen
           mode={authViewMode}
           onModeChange={navigateToAuthPage}
-          onAuthenticated={refreshAuthenticatedTutor}
+          onAuthenticated={refreshAuthenticatedUser}
           statusMessage={authState === "error" ? authMessage : ""}
         />
       )}
@@ -2822,6 +3454,7 @@ function App() {
       {assignLessonModal}
       {studentDetailsModal}
       {deleteConfirmModal}
+      {deleteStudentConfirmModal}
       {toast ? <Toast message={toast.message} /> : null}
     </>
   )

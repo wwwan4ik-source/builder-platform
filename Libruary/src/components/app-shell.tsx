@@ -64,6 +64,7 @@ export function AppShell({
                   <div className="user-summary">
                     <strong>{tutorProfile.name}</strong>
                     <span>{tutorProfile.email}</span>
+                    <small>{tutorProfile.role}</small>
                   </div>
                 </div>
                 <button

@@ -2,8 +2,10 @@ import { type LessonStatus } from "./lesson"
 
 export type StudentRow = {
   id: string
+  invite_id?: string
   name: string
   email: string | null
+  status: "active" | "pending"
   created_at: string
   assigned_lessons_count: number
 }
@@ -19,4 +21,3 @@ export type AssignedLessonRow = {
     status: LessonStatus
   } | null
 }
-
